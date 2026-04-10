@@ -10,6 +10,7 @@ import pytest
 
 from labapi import Index, Notebook, NotebookPage
 from labapi.entry import Attachment, Entries, UnknownEntry, WidgetEntry
+from labapi.util import CopyBehavior
 from labapi.user import User
 
 
@@ -72,8 +73,8 @@ class TestNotebookPageUnit:
         )
         assert attachment.closed is True
 
-    def test_copy_to_warns_and_continues_when_attachment_copy_fails(self):
-        """Test NotebookPage.copy_to warns and skips entries that fail to copy."""
+    def test_copy_to_warns_and_continues_by_default_when_attachment_copy_fails(self):
+        """Test default NotebookPage.copy_to behavior warns and continues on failure."""
         source_page = Mock(spec=NotebookPage)
         source_page.name = "Source Page"
         source_page.id = "source-page-id"
@@ -107,10 +108,11 @@ class TestNotebookPageUnit:
         new_page_entries.create.assert_called_once_with(
             attachment_entry.__class__, attachment
         )
+        new_page.delete.assert_not_called()
         assert attachment.closed is True
 
-    def test_copy_to_warns_and_continues_when_entry_create_raises(self):
-        """Test NotebookPage.copy_to catches per-entry create failures and continues."""
+    def test_copy_to_warn_skips_and_continues_when_entry_create_raises(self):
+        """Test NotebookPage.copy_to can warn and continue on per-entry create failure."""
         source_page = Mock(spec=NotebookPage)
         source_page.name = "Source Page"
         source_page.id = "source-page-id"
@@ -137,20 +139,94 @@ class TestNotebookPageUnit:
         destination.create.return_value = new_page
 
         with pytest.warns(RuntimeWarning, match="This entry was skipped"):
-            NotebookPage.copy_to(source_page, destination)
+            NotebookPage.copy_to(
+                source_page,
+                destination,
+                on_failure=CopyBehavior.Warn,
+            )
 
         assert new_page_entries.create.call_count == 2
-        assert new_page_entries.create.call_args_list[0].args == (
+        new_page.delete.assert_not_called()
+
+    def test_copy_to_ignore_skips_silently_when_entry_create_raises(self):
+        """Test NotebookPage.copy_to can ignore failures and continue."""
+        source_page = Mock(spec=NotebookPage)
+        source_page.name = "Source Page"
+        source_page.id = "source-page-id"
+
+        failing_entry = Mock()
+        failing_entry.id = "entry-text-1"
+        failing_entry.content_type = "Text"
+        failing_entry.content = "<p>bad</p>"
+
+        succeeding_entry = Mock()
+        succeeding_entry.id = "entry-text-2"
+        succeeding_entry.content_type = "Text"
+        succeeding_entry.content = "<p>ok</p>"
+        source_page.entries = [failing_entry, succeeding_entry]
+
+        new_page_entries = Mock()
+        new_page_entries.create.side_effect = [ValueError("create failed"), None]
+
+        new_page = Mock(spec=NotebookPage)
+        new_page.id = "new-page-id"
+        new_page.entries = new_page_entries
+
+        destination = Mock()
+        destination.create.return_value = new_page
+
+        NotebookPage.copy_to(
+            source_page,
+            destination,
+            on_failure=CopyBehavior.Ignore,
+        )
+
+        assert new_page_entries.create.call_count == 2
+        new_page.delete.assert_not_called()
+
+    def test_copy_to_rolls_back_and_raises_when_entry_create_raises(self):
+        """Test NotebookPage.copy_to fails whole copy and rolls back on create error."""
+        source_page = Mock(spec=NotebookPage)
+        source_page.name = "Source Page"
+        source_page.id = "source-page-id"
+
+        failing_entry = Mock()
+        failing_entry.id = "entry-text-1"
+        failing_entry.content_type = "Text"
+        failing_entry.content = "<p>bad</p>"
+
+        succeeding_entry = Mock()
+        succeeding_entry.id = "entry-text-2"
+        succeeding_entry.content_type = "Text"
+        succeeding_entry.content = "<p>ok</p>"
+        source_page.entries = [failing_entry, succeeding_entry]
+
+        new_page_entries = Mock()
+        new_page_entries.create.side_effect = [ValueError("create failed"), None]
+
+        new_page = Mock(spec=NotebookPage)
+        new_page.id = "new-page-id"
+        new_page.entries = new_page_entries
+
+        destination = Mock()
+        destination.create.return_value = new_page
+
+        with pytest.raises(RuntimeError, match="rolled back destination page"):
+            NotebookPage.copy_to(
+                source_page,
+                destination,
+                on_failure=CopyBehavior.Rollback,
+            )
+
+        assert new_page_entries.create.call_count == 1
+        assert new_page_entries.create.call_args.args == (
             failing_entry.__class__,
             failing_entry.content,
         )
-        assert new_page_entries.create.call_args_list[1].args == (
-            succeeding_entry.__class__,
-            succeeding_entry.content,
-        )
+        new_page.delete.assert_called_once_with()
 
-    def test_copy_to_warns_and_continues_when_attachment_fetch_fails(self):
-        """Test NotebookPage.copy_to warns and continues when reading attachment content fails."""
+    def test_copy_to_rolls_back_and_raises_when_attachment_fetch_fails(self):
+        """Test NotebookPage.copy_to rolls back when reading attachment content fails."""
         source_page = Mock(spec=NotebookPage)
         source_page.name = "Source Page"
         source_page.id = "source-page-id"
@@ -179,12 +255,15 @@ class TestNotebookPageUnit:
         destination = Mock()
         destination.create.return_value = new_page
 
-        with pytest.warns(RuntimeWarning, match="This entry was skipped"):
-            NotebookPage.copy_to(source_page, destination)
+        with pytest.raises(RuntimeError, match="rolled back destination page"):
+            NotebookPage.copy_to(
+                source_page,
+                destination,
+                on_failure=CopyBehavior.Rollback,
+            )
 
-        new_page_entries.create.assert_called_once_with(
-            succeeding_entry.__class__, succeeding_entry.content
-        )
+        new_page_entries.create.assert_not_called()
+        new_page.delete.assert_called_once_with()
 
 
 class TestNotebookPageIntegration:

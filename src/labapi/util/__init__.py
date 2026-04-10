@@ -8,6 +8,7 @@ indexing mechanisms, and data structures for notebook initialization.
 from .extract import extract_etree, to_bool
 from .path import NotebookPath
 from .types import (
+    CopyBehavior,
     IdIndex,
     IdOrNameIndex,
     Index,
@@ -32,6 +33,7 @@ ALL_PART_TYPES = (
 
 __all__ = [
     "ALL_PART_TYPES",  # See if there's a way to remove this
+    "CopyBehavior",
     "IdIndex",
     "IdOrNameIndex",
     "Index",

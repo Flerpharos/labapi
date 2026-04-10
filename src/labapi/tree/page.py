@@ -19,7 +19,7 @@ from labapi.entry import (
     UnknownEntry,
     WidgetEntry,
 )
-from labapi.util import InsertBehavior, extract_etree
+from labapi.util import CopyBehavior, InsertBehavior, extract_etree
 
 from .mixins import AbstractTreeContainer, AbstractTreeNode
 
@@ -135,7 +135,12 @@ class NotebookPage(AbstractTreeNode):
         return self._entries
 
     @override
-    def copy_to(self, destination: AbstractTreeContainer) -> NotebookPage:
+    def copy_to(
+        self,
+        destination: AbstractTreeContainer,
+        *,
+        on_failure: CopyBehavior = CopyBehavior.Warn,
+    ) -> NotebookPage:
         """Copy this page and its entries into ``destination``.
 
         .. warning::
@@ -146,19 +151,19 @@ class NotebookPage(AbstractTreeNode):
            - Some entry types may fail to copy and will cause errors
 
         :param destination: The target container to copy the page to.
+        :param on_failure: The behavior to apply when an entry fails to copy.
         :returns: A new instance of the copied page in the destination.
 
         Copy behavior for attachments is explicit:
 
         - attachment payloads are copied by reading and re-uploading the attachment content,
         - attachment resources opened during copy are always released,
-        - any per-entry copy failure is reported via warning and that entry is skipped.
+        - ``CopyBehavior.Ignore`` skips failing entries silently and continues.
+        - ``CopyBehavior.Warn`` warns and skips failing entries, then continues.
+        - ``CopyBehavior.Rollback`` aborts copy and rolls back destination page state.
 
-        .. note::
-           This method is best-effort and may produce partial copies if one or more
-           entries fail while others succeed.
-
-        :raises RuntimeWarning: Emitted when an individual entry fails to copy.
+        :raises RuntimeError: If ``on_failure`` is ``CopyBehavior.Rollback`` and
+                              an entry fails to copy.
         """
         new_page = destination.create(
             NotebookPage, self.name, if_exists=InsertBehavior.Ignore
@@ -176,12 +181,31 @@ class NotebookPage(AbstractTreeNode):
                 assert entry_content is not None
                 new_page.entries.create(cast(Any, entry.__class__), entry_content)
             except Exception as exc:
-                warnings.warn(
-                    f"Failed to copy entry {entry.id!r} ({entry.content_type!r}) from page "
-                    f"{self.id!r} to page {new_page.id!r}: {exc}. This entry was skipped.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                match on_failure:
+                    case CopyBehavior.Ignore:
+                        continue
+                    case CopyBehavior.Warn:
+                        warnings.warn(
+                            f"Failed to copy entry {entry.id!r} ({entry.content_type!r}) from page "
+                            f"{self.id!r} to page {new_page.id!r}: {exc}. This entry was skipped.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        continue
+                    case CopyBehavior.Rollback:
+                        try:
+                            new_page.delete()
+                        except Exception as delete_exc:
+                            warnings.warn(
+                                f"Failed to rollback copied page {new_page.id!r} after entry-copy "
+                                f"failure from page {self.id!r}: {delete_exc}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+                        raise RuntimeError(
+                            f"Failed to copy entry {entry.id!r} ({entry.content_type!r}) from page "
+                            f"{self.id!r}; rolled back destination page {new_page.id!r}."
+                        ) from exc
             finally:
                 if isinstance(entry_content, Attachment):
                     entry_content.close()

@@ -23,6 +23,17 @@ class InsertBehavior(Enum):
     """Raise :class:`~labapi.exceptions.NodeExistsError` if the node already exists."""
 
 
+class CopyBehavior(Enum):
+    """Enumeration of behaviors when copying pages with entry-level failures."""
+
+    Ignore = 0
+    """Skip failing entries without warning and continue copying."""
+    Warn = 1
+    """Warn and skip failing entries, then continue copying."""
+    Rollback = 2
+    """Rollback destination page state and fail the copy operation."""
+
+
 class Index(Enum):
     """Represents the available indexing methods for accessing items in a collection."""
 
